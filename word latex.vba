@@ -1,208 +1,321 @@
+Attribute VB_Name = "WordLatex"
 Option Explicit
 
-'========================
-' Main entry
-'========================
+Private Const LATEX_FORMAT As String = "EquationLaTexFormat"
+Private Const UNICODE_FORMAT As String = "EquationUnicodeFormat"
+Private Const PROGRESS_THRESHOLD As Long = 100
+
+Private Type LatexMatch
+    Offset As Long
+    Length As Long
+    Formula As String
+    Display As Boolean
+End Type
+
+Private batchActive As Boolean
+Private matches() As LatexMatch
+Private total As Long
+Private remaining As Long
+Private baseStart As Long
+Private work As Range
+Private modeAnchor As Range
+Private restoreUnicode As Boolean
+Private checkExistingMath As Boolean
+Private edited As Boolean
+Private batchError As String
+
 Public Sub Convert_Selected_LaTeX_To_WordEquations()
-    Dim selRng As Range
-    If Selection Is Nothing Then Exit Sub
-    If Selection.Range Is Nothing Then Exit Sub
-    If Selection.Range.Start = Selection.Range.End Then
-        MsgBox "请先在文档中框选一段包含 LaTeX 公式定界符的文本区域。", vbExclamation
+    If batchActive Then Exit Sub
+    If Documents.Count = 0 Then Exit Sub
+
+    Dim source As Range
+    Set source = Selection.Range.Duplicate
+    If source.Start = source.End Then
+        MsgBox "Select text containing LaTeX equations first.", vbInformation
         Exit Sub
     End If
 
-    Set selRng = Selection.Range.Duplicate
-
+    Dim doc As Document
+    Dim docView As View
+    Dim undo As UndoRecord
+    Dim undoOpen As Boolean
     Dim oldScreenUpdating As Boolean
+    Dim oldViewType As WdViewType
+    Dim oldPagination As Boolean
+    Dim changedView As Boolean
+    Dim changedPagination As Boolean
+    Dim progress As LatexBatchProgress
+    Dim failure As String
+
+    batchActive = True
     oldScreenUpdating = Application.ScreenUpdating
+    On Error GoTo Failed
+
+    Set doc = source.Document
+    Dim snapshot As String
+    snapshot = source.Text
+    If Len(snapshot) <> source.End - source.Start Then
+        Err.Raise vbObjectError + 410, , "Word did not return a consistent text range. Select a smaller, continuous area."
+    End If
+
+    ScanMatches snapshot
+    If total = 0 Then
+        MsgBox "No LaTeX equations delimited by $...$, \(...\), or \[...\] were found.", vbInformation
+        GoTo Cleanup
+    End If
+
+    baseStart = source.Start
+    Set work = source.Duplicate
+    checkExistingMath = (source.OMaths.Count > 0)
+    remaining = total
     Application.ScreenUpdating = False
 
-    On Error GoTo CleanFail
-
-    ' Try to switch Equation input to LaTeX mode (best-effort).
-    Ensure_EquationMode_LaTeX
-
-    ' Collect matches (0-based indices in selRng.Text)
-    Dim starts() As Long, lens() As Long, latex() As String, isDisplay() As Boolean
-    Dim n As Long
-    n = Collect_LaTeX_Matches(selRng.Text, starts, lens, latex, isDisplay)
-
-    If n = 0 Then
-        MsgBox "在所选区域内未找到 $...$、\(...\) 或 \[...\] 形式的 LaTeX 公式。", vbInformation
-        GoTo CleanExit
+    If total >= PROGRESS_THRESHOLD Then
+        Set docView = ActiveWindow.View
+        oldViewType = docView.Type
+        If oldViewType = wdPrintView Then
+            docView.Type = wdNormalView
+            changedView = True
+        End If
+        If docView.Type = wdNormalView Then
+            oldPagination = Options.Pagination
+            If oldPagination Then
+                Options.Pagination = False
+                changedPagination = True
+            End If
+        End If
     End If
 
-    ' One undo step (Word 2016+/365 should support UndoRecord)
-    On Error Resume Next
-    Application.UndoRecord.StartCustomRecord "Convert LaTeX to Word Equations"
-    On Error GoTo CleanFail
+    Set undo = Application.UndoRecord
+    undo.StartCustomRecord "Convert LaTeX to Word Equations"
+    undoOpen = True
 
-    ' Process from end to start to keep indices stable
-    Dim i As Long
-    For i = n To 1 Step -1
-        Convert_One_Match selRng, starts(i), lens(i), latex(i), isDisplay(i)
-    Next i
+    ' Word enables the LaTeX ribbon command when an equation is selected. Set
+    ' the mode on the first new equation, before showing the modal progress window.
+    Do While remaining > 0 And modeAnchor Is Nothing
+        ConvertNext
+    Loop
 
+    If remaining > 0 And total >= PROGRESS_THRESHOLD And Application.Visible Then
+        Set progress = New LatexBatchProgress
+        progress.Show vbModal
+    Else
+        ConvertRemainingLatex Nothing
+    End If
+    failure = batchError
+    GoTo Cleanup
+
+Failed:
+    failure = Err.Description
+
+Cleanup:
     On Error Resume Next
-    Application.UndoRecord.EndCustomRecord
+    If Not progress Is Nothing Then Unload progress
+    If restoreUnicode Then
+        modeAnchor.Select
+        Application.CommandBars.ExecuteMso UNICODE_FORMAT
+    End If
+    If undoOpen Then undo.EndCustomRecord
+    If Len(failure) > 0 And edited And undoOpen Then
+        Dim rolledBack As Boolean
+        rolledBack = doc.Undo(1)
+        If Not rolledBack Then failure = failure & vbCrLf & "Use Undo to review the partial conversion."
+    End If
+    If changedPagination Then Options.Pagination = oldPagination
+    If changedView Then docView.Type = oldViewType
+    If edited Then source.Select
+    Application.ScreenUpdating = oldScreenUpdating
     On Error GoTo 0
 
-CleanExit:
-    Application.ScreenUpdating = oldScreenUpdating
+    Erase matches
+    Set work = Nothing
+    Set modeAnchor = Nothing
+    total = 0
+    restoreUnicode = False
+    edited = False
+    batchError = vbNullString
+    batchActive = False
+
+    If Len(failure) > 0 Then MsgBox failure, vbExclamation, "Convert LaTeX"
+End Sub
+
+' Called by LatexBatchProgress.Activate. The modal window prevents edits to
+' the selected document while DoEvents updates progress and dispatches messages.
+Public Sub ConvertRemainingLatex(ByVal progress As LatexBatchProgress)
+    On Error GoTo Failed
+    Dim lastUpdate As Single
+    lastUpdate = Timer
+    If Not progress Is Nothing Then progress.Report total - remaining, total
+
+    Do While remaining > 0
+        ConvertNext
+        If Not progress Is Nothing Then
+            If Timer < lastUpdate Or Timer - lastUpdate >= 0.15 Or remaining = 0 Then
+                progress.Report total - remaining, total
+                DoEvents
+                lastUpdate = Timer
+            End If
+        End If
+    Loop
     Exit Sub
 
-CleanFail:
-    On Error Resume Next
-    Application.UndoRecord.EndCustomRecord
-    Application.ScreenUpdating = oldScreenUpdating
-    MsgBox "转换过程中发生错误：" & vbCrLf & Err.Number & " - " & Err.Description, vbExclamation
+Failed:
+    batchError = Err.Description
 End Sub
 
-'========================
-' Convert one match into OMath
-'========================
-Private Sub Convert_One_Match(ByVal baseSel As Range, ByVal start0 As Long, ByVal len0 As Long, _
-                              ByVal latexInner As String, ByVal displayMode As Boolean)
-
-    Dim doc As Document
-    Set doc = baseSel.Document
-
-    Dim absStart As Long, absEnd As Long
-    absStart = baseSel.Start + start0
-    absEnd = absStart + len0
-
-    ' Normalize LaTeX (Word OMath can't span paragraphs; replace hard breaks with spaces)
-    Dim s As String
-    s = latexInner
-    s = Replace(s, vbCr, " ")
-    s = Replace(s, vbLf, " ")
-    s = Replace(s, vbTab, " ")
-    s = Trim$(s)
-
-    ' For display \[...\], force it into its own paragraph (best-effort).
-    ' Insert paragraph break BEFORE if needed
-    If displayMode Then
-        If absStart > 0 Then
-            If doc.Range(absStart - 1, absStart).Text <> vbCr Then
-                doc.Range(absStart, absStart).InsertBefore vbCr
-                absStart = absStart + 1
-                absEnd = absEnd + 1
+Private Sub ConvertNext()
+    With matches(remaining)
+        Dim startAt As Long, endAt As Long
+        startAt = baseStart + .Offset
+        endAt = startAt + .Length
+        work.SetRange startAt, endAt
+        If checkExistingMath Then
+            If work.OMaths.Count > 0 Then
+                remaining = remaining - 1
+                Exit Sub
             End If
         End If
 
-        ' Insert paragraph break AFTER if needed
-        If absEnd < doc.Content.End Then
-            ' Need a safe 1-char range to test; if at boundary, skip
-            If absEnd + 1 <= doc.Content.End Then
-                If doc.Range(absEnd, absEnd + 1).Text <> vbCr Then
-                    doc.Range(absEnd, absEnd).InsertAfter vbCr
-                End If
+        Dim prefix As String, suffix As String
+        If .Display Then
+            If startAt > 0 Then
+                work.SetRange startAt - 1, startAt
+                If work.Text <> vbCr And work.Text <> Chr$(7) Then prefix = vbCr
+            End If
+            If endAt < work.StoryLength Then
+                work.SetRange endAt, endAt + 1
+                If work.Text <> vbCr And work.Text <> Chr$(7) Then suffix = vbCr
+            End If
+            work.SetRange startAt, endAt
+        End If
+
+        work.Text = prefix & .Formula & suffix
+        edited = True
+        startAt = startAt + Len(prefix)
+        work.SetRange startAt, startAt + Len(.Formula)
+
+        Dim equationRange As Range
+        Set equationRange = work.OMaths.Add(work)
+        Dim equation As OMath
+        Set equation = equationRange.OMaths(1)
+
+        If modeAnchor Is Nothing Then
+            Set modeAnchor = equationRange.Duplicate
+            modeAnchor.Select
+            restoreUnicode = Not Application.CommandBars.GetPressedMso(LATEX_FORMAT)
+            If restoreUnicode Then Application.CommandBars.ExecuteMso LATEX_FORMAT
+            If Not Application.CommandBars.GetPressedMso(LATEX_FORMAT) Then
+                Err.Raise vbObjectError + 411, , "This version of Word could not select LaTeX equation input."
             End If
         End If
-    End If
 
-    ' Replace delimiter-wrapped text with pure LaTeX content
-    Dim r As Range
-    Set r = doc.Range(absStart, absEnd)
-    r.Text = s
-
-    ' Turn into OMath and BuildUp
-    Dim eqRng As Range
-    Set eqRng = r.OMaths.Add(r)          ' returns a range that contains OMath(s) (per Word OMath model)
-    Dim eq As OMath
-    Set eq = eqRng.OMaths(1)
-
-    ' Justification control
-    On Error Resume Next
-    If displayMode Then
-        eq.Justification = wdOMathJcCenter
-        eq.Range.ParagraphFormat.Alignment = wdAlignParagraphCenter
-    Else
-        eq.Justification = wdOMathJcInline
-    End If
-    On Error GoTo 0
-
-    ' Build up to professional format
-    On Error Resume Next
-    eq.BuildUp
-    On Error GoTo 0
-
-    ' Important: BuildUp may collapse/shift the working range; normalize to end of equation.
-    ' (Common workaround observed in practice.)
-    On Error Resume Next
-    Dim tmp As Range
-    Set tmp = eq.Range
-    tmp.Collapse Direction:=wdCollapseEnd
-    On Error GoTo 0
-End Sub
-
-'========================
-' Collect matches using RegExp
-' Returns count n; arrays are 1..n
-'========================
-Private Function Collect_LaTeX_Matches(ByVal textIn As String, _
-                                      ByRef starts() As Long, ByRef lens() As Long, _
-                                      ByRef latex() As String, ByRef isDisplay() As Boolean) As Long
-    Dim re As Object, ms As Object, m As Object
-    Set re = CreateObject("VBScript.RegExp")
-
-    ' Pattern supports:
-    ' 1) \[ ... \]  (display)     -> capture group 1
-    ' 2) \( ... \)  (inline)      -> capture group 2
-    ' 3) $ ... $    (inline)      -> capture group 3
-    '
-    ' Notes:
-    ' - [\s\S]*? allows cross-line matching without relying on DOTALL.
-    ' - (?!\$) avoids matching $$...$$ as $...$.
-    re.Global = True
-    re.MultiLine = True
-    re.IgnoreCase = False
-    re.Pattern = "\\\[([\s\S]*?)\\\]|\\\(([\s\S]*?)\\\)|\$(?!\$)((?:\\\$|[^$])*)\$(?!\$)"
-
-    Set ms = re.Execute(textIn)
-
-    Dim n As Long
-    n = 0
-
-    For Each m In ms
-        n = n + 1
-        ReDim Preserve starts(1 To n)
-        ReDim Preserve lens(1 To n)
-        ReDim Preserve latex(1 To n)
-        ReDim Preserve isDisplay(1 To n)
-
-        starts(n) = CLng(m.FirstIndex)   ' 0-based in textIn
-        lens(n) = CLng(m.Length)
-
-        If Len(m.SubMatches(0)) > 0 Then
-            isDisplay(n) = True
-            latex(n) = CStr(m.SubMatches(0))
-        ElseIf Len(m.SubMatches(1)) > 0 Then
-            isDisplay(n) = False
-            latex(n) = CStr(m.SubMatches(1))
+        equation.BuildUp
+        If .Display Then
+            If equation.Type <> wdOMathDisplay Then equation.Type = wdOMathDisplay
+            equation.Justification = wdOMathJcCenter
+            equation.Range.ParagraphFormat.Alignment = wdAlignParagraphCenter
         Else
-            isDisplay(n) = False
-            latex(n) = CStr(m.SubMatches(2))
+            If equation.Type <> wdOMathInline Then equation.Type = wdOMathInline
         End If
-    Next m
-
-    Collect_LaTeX_Matches = n
-End Function
-
-'========================
-' Best-effort: switch Equation input mode to LaTeX
-'========================
-Private Sub Ensure_EquationMode_LaTeX()
-    On Error Resume Next
-
-    ' Some builds expose an idMso; if unavailable, this fails silently.
-    Application.CommandBars.ExecuteMso "EquationModeLaTeX"
-
-    ' Widely used workaround: invoke the Word command via a built-in dialog id.
-    ' (Best-effort; may no-op depending on build/UI state.)
-    Application.Dialogs(2844).Execute
-    DoEvents
-
-    On Error GoTo 0
+    End With
+    remaining = remaining - 1
 End Sub
+
+Private Sub ScanMatches(ByVal snapshot As String)
+    ReDim matches(1 To 64)
+    Dim segmentStart As Long, i As Long
+    segmentStart = 1
+    ' Word uses these characters for cell ends, section breaks and fields.
+    ' A replacement must stay on one side of each boundary.
+    For i = 1 To Len(snapshot)
+        Select Case AscW(Mid$(snapshot, i, 1))
+            Case 7, 12, 19, 20, 21
+                ScanSegment Mid$(snapshot, segmentStart, i - segmentStart), segmentStart - 1
+                segmentStart = i + 1
+        End Select
+    Next i
+    ScanSegment Mid$(snapshot, segmentStart), segmentStart - 1
+End Sub
+
+Private Sub ScanSegment(ByVal segment As String, ByVal offset As Long)
+    Dim i As Long, closing As Long, delimiterSize As Long
+    Dim nextBracket As Long, nextParen As Long, nextDollar As Long
+    Dim display As Boolean
+    i = 1
+    Do While i <= Len(segment)
+        closing = 0
+        display = False
+        delimiterSize = 2
+        Select Case Mid$(segment, i, 1)
+            Case "\"
+                Select Case Mid$(segment, i + 1, 1)
+                    Case "["
+                        display = True
+                        closing = FindCloser(segment, "\]", i + 2, nextBracket)
+                    Case "("
+                        closing = FindCloser(segment, "\)", i + 2, nextParen)
+                End Select
+            Case "$"
+                delimiterSize = 1
+                If Mid$(segment, i + 1, 1) = "$" Then
+                    Do While Mid$(segment, i + 1, 1) = "$"
+                        i = i + 1
+                    Loop
+                Else
+                    closing = FindCloser(segment, "$", i + 1, nextDollar)
+                    If closing > 0 Then
+                        If Mid$(segment, closing + 1, 1) = "$" Then closing = 0
+                    End If
+                End If
+            Case Else
+                delimiterSize = 1
+        End Select
+
+        If closing > 0 Then
+            Dim formula As String
+            formula = Mid$(segment, i + delimiterSize, closing - i - delimiterSize)
+            formula = Replace(formula, vbCr, " ")
+            formula = Replace(formula, vbLf, " ")
+            formula = Replace(formula, vbTab, " ")
+            formula = Trim$(Replace(formula, Chr$(11), " "))
+            If Len(formula) > 0 Then
+                total = total + 1
+                If total > UBound(matches) Then ReDim Preserve matches(1 To UBound(matches) * 2)
+                With matches(total)
+                    .Offset = offset + i - 1
+                    .Length = closing + delimiterSize - i
+                    .Formula = formula
+                    .Display = display
+                End With
+            End If
+            i = closing + delimiterSize
+        Else
+            i = i + delimiterSize
+        End If
+    Loop
+End Sub
+
+Private Function FindCloser(ByVal segment As String, ByVal delimiter As String, _
+                            ByVal startAt As Long, ByRef cached As Long) As Long
+    ' Cache each delimiter's next match, including a failed search. A series
+    ' of unmatched openers must not scan the same suffix for each opener.
+    If cached = -1 Then Exit Function
+    If cached < startAt Then
+        cached = InStr(startAt, segment, delimiter, vbBinaryCompare)
+        Do While cached > 0
+            Dim preceding As Long
+            preceding = cached - 1
+            Do While preceding > 0
+                If Mid$(segment, preceding, 1) <> "\" Then Exit Do
+                preceding = preceding - 1
+            Loop
+            If (cached - 1 - preceding) Mod 2 = 0 Then Exit Do
+            cached = InStr(cached + 1, segment, delimiter, vbBinaryCompare)
+        Loop
+        If cached = 0 Then
+            cached = -1
+            Exit Function
+        End If
+    End If
+    FindCloser = cached
+End Function
