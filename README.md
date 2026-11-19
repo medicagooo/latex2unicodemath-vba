@@ -22,4 +22,4 @@ pwsh -File .\Install-WordLatex.ps1
 2. 在同一项目插入空白 UserForm，把 `(Name)` 设为 `LatexBatchProgress`，将 [LatexBatchProgress.vba](LatexBatchProgress.vba) 粘贴到窗体的代码编辑器。
 3. 编译项目并保存模板。将模板字节转换成 Base64 后，替换安装脚本的 `$payload` 内容。
 
-安装后，可以运行 `pwsh -File .\tests\Test-WordLatex.ps1` 验证三个定界符、选区边界和一次撤销。加上 `-BulkCounts 100,1000,5000` 可测试大批量处理。
+安装后，在 PowerShell 7 里运行 `.\tests\Test-WordLatex.ps1`，可以验证三个定界符、选区边界和一次撤销。加上 `-BulkCounts 100,1000,5000` 可测试大批量处理。

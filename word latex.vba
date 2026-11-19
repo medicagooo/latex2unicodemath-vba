@@ -34,11 +34,16 @@ Public Sub Convert_Selected_LaTeX_To_WordEquations()
         MsgBox "Select text containing LaTeX equations first.", vbInformation
         Exit Sub
     End If
+    If Selection.Type <> wdSelectionNormal Then
+        MsgBox "Select a continuous span of text to convert LaTeX equations.", vbInformation
+        Exit Sub
+    End If
 
     Dim doc As Document
     Dim docView As View
     Dim undo As UndoRecord
     Dim undoOpen As Boolean
+    Dim undoClosed As Boolean
     Dim oldScreenUpdating As Boolean
     Dim oldViewType As WdViewType
     Dim oldPagination As Boolean
@@ -68,6 +73,10 @@ Public Sub Convert_Selected_LaTeX_To_WordEquations()
     Set work = source.Duplicate
     checkExistingMath = (source.OMaths.Count > 0)
     remaining = total
+    Set undo = Application.UndoRecord
+    If undo.IsRecordingCustomRecord Then
+        Err.Raise vbObjectError + 412, , "Wait for the current Word operation to finish before converting equations."
+    End If
     Application.ScreenUpdating = False
 
     If total >= PROGRESS_THRESHOLD Then
@@ -86,7 +95,6 @@ Public Sub Convert_Selected_LaTeX_To_WordEquations()
         End If
     End If
 
-    Set undo = Application.UndoRecord
     undo.StartCustomRecord "Convert LaTeX to Word Equations"
     undoOpen = True
 
@@ -115,10 +123,16 @@ Cleanup:
         modeAnchor.Select
         Application.CommandBars.ExecuteMso UNICODE_FORMAT
     End If
-    If undoOpen Then undo.EndCustomRecord
-    If Len(failure) > 0 And edited And undoOpen Then
+    If undoOpen Then
+        If undo.IsRecordingCustomRecord Then
+            Err.Clear
+            undo.EndCustomRecord
+            undoClosed = (Err.Number = 0)
+        End If
+    End If
+    If Len(failure) > 0 And edited Then
         Dim rolledBack As Boolean
-        rolledBack = doc.Undo(1)
+        If undoClosed Then rolledBack = doc.Undo(1)
         If Not rolledBack Then failure = failure & vbCrLf & "Use Undo to review the partial conversion."
     End If
     If changedPagination Then Options.Pagination = oldPagination
@@ -240,6 +254,7 @@ End Sub
 Private Sub ScanSegment(ByVal segment As String, ByVal offset As Long)
     Dim i As Long, closing As Long, delimiterSize As Long
     Dim nextBracket As Long, nextParen As Long, nextDollar As Long
+    Dim nextBracketOpen As Long, nextParenOpen As Long, nextOpen As Long
     Dim display As Boolean
     i = 1
     Do While i <= Len(segment)
@@ -251,9 +266,17 @@ Private Sub ScanSegment(ByVal segment As String, ByVal offset As Long)
                 Select Case Mid$(segment, i + 1, 1)
                     Case "["
                         display = True
-                        closing = FindCloser(segment, "\]", i + 2, nextBracket)
+                        closing = FindDelimiter(segment, "\]", i + 2, nextBracket)
+                        If closing > 0 Then
+                            nextOpen = FindDelimiter(segment, "\[", i + 2, nextBracketOpen)
+                            If nextOpen > 0 And nextOpen < closing Then closing = 0
+                        End If
                     Case "("
-                        closing = FindCloser(segment, "\)", i + 2, nextParen)
+                        closing = FindDelimiter(segment, "\)", i + 2, nextParen)
+                        If closing > 0 Then
+                            nextOpen = FindDelimiter(segment, "\(", i + 2, nextParenOpen)
+                            If nextOpen > 0 And nextOpen < closing Then closing = 0
+                        End If
                 End Select
             Case "$"
                 delimiterSize = 1
@@ -262,7 +285,7 @@ Private Sub ScanSegment(ByVal segment As String, ByVal offset As Long)
                         i = i + 1
                     Loop
                 Else
-                    closing = FindCloser(segment, "$", i + 1, nextDollar)
+                    closing = FindDelimiter(segment, "$", i + 1, nextDollar)
                     If closing > 0 Then
                         If Mid$(segment, closing + 1, 1) = "$" Then closing = 0
                     End If
@@ -295,8 +318,8 @@ Private Sub ScanSegment(ByVal segment As String, ByVal offset As Long)
     Loop
 End Sub
 
-Private Function FindCloser(ByVal segment As String, ByVal delimiter As String, _
-                            ByVal startAt As Long, ByRef cached As Long) As Long
+Private Function FindDelimiter(ByVal segment As String, ByVal delimiter As String, _
+                               ByVal startAt As Long, ByRef cached As Long) As Long
     ' Cache each delimiter's next match, including a failed search. A series
     ' of unmatched openers must not scan the same suffix for each opener.
     If cached = -1 Then Exit Function
@@ -317,5 +340,5 @@ Private Function FindCloser(ByVal segment As String, ByVal delimiter As String, 
             Exit Function
         End If
     End If
-    FindCloser = cached
+    FindDelimiter = cached
 End Function

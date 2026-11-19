@@ -13,10 +13,24 @@ function Assert-WordResult([bool] $Condition, [string] $Message) {
     if (-not $Condition) { throw $Message }
 }
 
+function Get-LatexInputMode {
+    $probe = $word.Documents.Add()
+    try {
+        $probe.Range(0, 0).Text = 'x'
+        $range = $probe.Range(0, 1)
+        $probeEquation = $range.OMaths.Add($range)
+        $probeEquation.Select()
+        $word.CommandBars.GetPressedMso('EquationLaTexFormat')
+    } finally {
+        $probe.Close(0)
+    }
+}
+
 function Test-Conversion(
     [string] $Text, [int] $Count, [string] $Before = '', [string] $After = '',
     [switch] $CheckLayout
 ) {
+    if ($CheckLayout) { $latexInputMode = Get-LatexInputMode }
     $doc = $word.Documents.Add()
     try {
         $original = $Before + $Text + $After + "`r"
@@ -44,6 +58,9 @@ function Test-Conversion(
             Assert-WordResult ($doc.OMaths.Item(3).Type -eq 0) 'Expected a display equation.'
             Assert-WordResult ($doc.OMaths.Item(3).Range.ParagraphFormat.Alignment -eq 1) 'The display equation was not centered.'
             Assert-WordResult ($doc.Content.Text.Contains('$$untouched$$ \$literal \( \)')) 'Ignored delimiters were modified.'
+            Assert-WordResult ($doc.Content.Text.Contains('\[unfinished prose ')) 'An unmatched display opener consumed surrounding text.'
+            $doc.OMaths.Item(1).Range.Select()
+            Assert-WordResult ($latexInputMode -eq $word.CommandBars.GetPressedMso('EquationLaTexFormat')) 'Word did not restore the equation input mode.'
         }
         Assert-WordResult ($doc.Undo(1)) 'The conversion could not be undone.'
         Assert-WordResult ($doc.Content.Text -ceq $original -and $doc.OMaths.Count -eq 0) 'One Undo did not restore the original document.'
@@ -60,7 +77,8 @@ try {
         $template = (Resolve-Path -LiteralPath $TemplatePath).Path
         $null = $word.AddIns.Add($template, $true)
     }
-    $sample = 'Selected ' + [char]::ConvertFromUtf32(0x1F642) + ' $\frac{a}{b}$, \(x_2\), then \[\sqrt{3}\] and $$untouched$$ \$literal \( \).'
+    $word.Visible = $true
+    $sample = 'Selected ' + [char]::ConvertFromUtf32(0x1F642) + ' $\frac{a}{b}$, \(x_2\), then \[unfinished prose \[\sqrt{3}\] and $$untouched$$ \$literal \( \).'
     Test-Conversion -Text $sample `
         -Count 3 -Before 'Outside $before$. ' -After ' Outside $after$.' -CheckLayout
     Test-Conversion -Text (('\[unmatched ' * 5000) + '$x$') -Count 1
