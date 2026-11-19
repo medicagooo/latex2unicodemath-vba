@@ -1,8 +1,6 @@
 # WORD-001 · Word LaTeX 批量转换和全局安装
 
-状态：宏和安装脚本已通过审查和本机 Word 回归。待首次推送。
-
-待执行：WORD-001-005。
+状态：宏和安装脚本已通过审查和本机 Word 回归，已推送到 GitHub `main`。
 
 ## WORD-001-001 · 用户需求 · 2026-11-19
 
@@ -29,3 +27,9 @@ Windows 桌面 Word 16.0.20527 上，原版转换 100、1,000、5,000 条测试�
 ## WORD-001-005 · 推送 main · 2026-11-19
 
 依据 WORD-001-001，将当前工作目录的本地 `main`（包含本事件的提交）通过 `origin` 推送到 `https://github.com/medicagooo/latex2unicodemath-vba.git` 的 `refs/heads/main`，并建立本地上游跟踪。推送前已核实远端无任何 ref。预期首次创建远端 `main`，并使其 SHA 与本地 `main` 一致。
+
+已验证远端 `refs/heads/main` 为 `315bde2f8992abeb48cce9df089608a7c9895f17`。
+
+## WORD-001-006 · README · 2026-11-19
+
+补充项目介绍和使用说明，提供中英文版本。默认 README 使用英文，页首链接到中文版。

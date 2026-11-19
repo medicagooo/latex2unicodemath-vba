@@ -1,25 +1,52 @@
-# 在 Word 中批量转换 LaTeX 公式
+# LaTeX to Word Equations
 
-支持 Windows 桌面 Word，Word 需要提供 LaTeX 公式输入模式。
+English · [简体中文](README.zh-CN.md)
 
-关闭 Word，用 PowerShell 7 运行安装脚本。
+Convert LaTeX expressions in selected text into editable Microsoft Word equations. The macro converts inline and display equations together, shows progress on large selections, and lets you undo the whole conversion with one press of `Ctrl+Z`.
+
+The PowerShell installer includes a Word template that makes the macro available in new and existing documents for your Windows account.
+
+## Install
+
+You need PowerShell 7 and the Windows desktop version of Word with LaTeX equation input. [Supported LaTeX syntax in Word](https://support.microsoft.com/en-gb/word/linear-format-equations-using-unicodemath-and-latex-in-word)
+
+Close Word, open PowerShell in the folder containing [Install-WordLatex.ps1](Install-WordLatex.ps1), and run the installer.
 
 ```powershell
 pwsh -File .\Install-WordLatex.ps1
 ```
 
-脚本按照 Word 的 Startup 设置安装内置的 `WordLatexEquations.dotm`。重新打开 Word 即可使用。再次运行脚本会更新模板。要卸载，关闭 Word，然后从安装脚本报告的路径移除该模板。 [Microsoft Word Startup 说明](https://learn.microsoft.com/en-us/office/vba/api/word.application.startuppath)
+The script reports where it installed `WordLatexEquations.dotm`. Word loads the template from its configured Startup folder the next time it starts. [Microsoft Word Startup documentation](https://learn.microsoft.com/en-us/office/vba/api/word.application.startuppath)
 
-1. 选中包含公式的正文。
-2. 按 `Alt+F8`，运行 `Convert_Selected_LaTeX_To_WordEquations`。
-3. `$...$` 和 `\(...\)` 转为行内公式，`\[...\]` 转为独立居中的公式。大批量转换时，Word 会显示进度。用一次 `Ctrl+Z` 撤销整次转换。
+## Convert equations
 
-如果有同名旧宏，在宏对话框里选择 `WordLatexEquations.dotm`。公式语法以 Word 的 LaTeX 支持范围为准。 [Microsoft Word LaTeX 说明](https://support.microsoft.com/en-gb/word/linear-format-equations-using-unicodemath-and-latex-in-word)
+1. Open or create a document in Word.
+2. Select a continuous range of text containing the LaTeX expressions.
+3. Press `Alt+F8`, select `Convert_Selected_LaTeX_To_WordEquations`, and click **Run**. If an older macro has the same name, choose `WordLatexEquations.dotm` in the Macros dialog.
 
-## 更新安装脚本中的模板
+| Delimiters | Result |
+| --- | --- |
+| `$...$` | Inline equation |
+| `\(...\)` | Inline equation |
+| `\[...\]` | Centered equation on its own line |
 
-1. 在 Word 中创建空白 `.dotm`，在 VBA 编辑器里将 [word latex.vba](word%20latex.vba) 作为 `.bas` 文件导入模板项目。
-2. 在同一项目插入空白 UserForm，把 `(Name)` 设为 `LatexBatchProgress`，将 [LatexBatchProgress.vba](LatexBatchProgress.vba) 粘贴到窗体的代码编辑器。
-3. 编译项目并保存模板。将模板字节转换成 Base64 后，替换安装脚本的 `$payload` 内容。
+To try it, paste the following text into Word and select it before running the macro.
 
-安装后，在 PowerShell 7 里运行 `.\tests\Test-WordLatex.ps1`，可以验证三个定界符、选区边界和一次撤销。加上 `-BulkCounts 100,1000,5000` 可测试大批量处理。
+```text
+The area is $A = \pi r^2$ and the second term is \(x_2\).
+\[\frac{a}{b} = c\]
+```
+
+The example produces two inline equations and one centered equation.
+
+## Update or uninstall
+
+To update, close Word and run the newer installer. To uninstall, close Word and remove `WordLatexEquations.dotm` from the path reported by the installer.
+
+## Rebuild the template
+
+1. Create a blank `.dotm` template in Word. In the VBA editor, import [word latex.vba](word%20latex.vba) as a `.bas` file into the template project.
+2. Add a blank UserForm to the same project and set its `(Name)` to `LatexBatchProgress`. Paste [LatexBatchProgress.vba](LatexBatchProgress.vba) into the form's code window.
+3. Compile the VBA project and save the template. Encode the template bytes as Base64 and replace the installer's `$payload`.
+
+After installation, run `.\tests\Test-WordLatex.ps1` from PowerShell 7 to check delimiter handling, selection boundaries, and undo. Pass `-BulkCounts 100,1000,5000` to test larger selections.
