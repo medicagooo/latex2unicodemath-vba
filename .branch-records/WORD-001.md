@@ -2,6 +2,8 @@
 
 状态：宏和安装脚本已通过审查和本机 Word 回归，已推送到 GitHub `main`。
 
+待执行：WORD-001-007。
+
 ## WORD-001-001 · 用户需求 · 2026-11-19
 
 修复大量选中文本转换时 Word 卡住的问题。保留 `$...$`、`\(...\)`、`\[...\]` 和原生可编辑公式。用桌面 Word 验证批量转换、选区边界、独立公式排版和一次撤销。
@@ -33,3 +35,7 @@ Windows 桌面 Word 16.0.20527 上，原版转换 100、1,000、5,000 条测试�
 ## WORD-001-006 · README · 2026-11-19
 
 补充项目介绍和使用说明，提供中英文版本。默认 README 使用英文，页首链接到中文版。
+
+## WORD-001-007 · 推送双语 README · 2026-11-19
+
+用户授权将 WORD-001-006 推送到 GitHub `main`。操作前，本地 `refs/heads/main` 为 `98b2106249d10aebafcf9d98a76f2283ce0fade2`，远端 `refs/heads/main` 为 `315bde2f8992abeb48cce9df089608a7c9895f17`。通过 `origin` 将包含本记录的本地 `main` 快进推送到 `https://github.com/medicagooo/latex2unicodemath-vba.git` 的 `refs/heads/main`，使远端包含默认英文和简体中文 README。
